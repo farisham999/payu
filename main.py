@@ -109,7 +109,6 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
             yield f"data: {json.dumps({'type': 'result', 'msg': 'Failed to extract Order ID', 'status': 'error'})}\n\n"
             return
 
-        # STEP 2 - 5 (sama seperti sebelum ni)
         try:
             page_html = session.get('https://secure.payu.com/pay/', params={'orderId': order_id, 'token': token}, headers={'user-agent': ua}, timeout=30).text
             amt_match = re.search(r'"totalAmount"\s*:\s*"?(\d+)"?', page_html)
@@ -170,7 +169,7 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     finally:
         session.close()
 
-# ================== JSON ENDPOINT (CLEAN) ==================
+# ================== JSON API (IKUT KEINGINAN KAU) ==================
 @app.get("/check")
 async def check_card(
     cc: str = Query(...),
@@ -188,8 +187,6 @@ async def check_card(
     if len(yy) == 2:
         yy = '20' + yy
 
-    masked_cc = card_num[:6] + "******" + card_num[-4:]
-
     result = None
     for chunk in event_stream(card_num, mm, yy, cvv_code, site, proxy):
         try:
@@ -204,8 +201,8 @@ async def check_card(
 
     if not result:
         return JSONResponse(content={
-            "Gateway": "PayU",
-            "CC": masked_cc,
+            "Gateway": "PayU Payment",
+            "CC": cc,
             "Result": "Unknown Error",
             "Response": "No response",
             "Status": "error",
@@ -217,8 +214,8 @@ async def check_card(
     response_value = raw.get('value') or raw.get('category') or "UNKNOWN"
 
     return JSONResponse(content={
-        "Gateway": "PayU",
-        "CC": masked_cc,
+        "Gateway": "PayU Payment",
+        "CC": cc,                    # Full CC tanpa masking
         "Result": result.get('msg'),
         "Response": response_value,
         "Status": result.get('status'),
