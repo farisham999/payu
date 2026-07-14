@@ -205,11 +205,19 @@ def event_stream(card_num, mm, yy, cvv_code):
         card_token = token_data.get('value')
 
         if not card_token:
-            error_msg = token_data.get('error', {}).get('message', '') if isinstance(token_data.get('error'), dict) else str(token_data.get('error', ''))
-            if not error_msg: error_msg = "Unknown tokenization error"
+            # DIPERBAIKI: Lebih detail semasa tangkap error tokenization
+            error_obj = token_data.get('error', {})
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get('message', '') or error_obj.get('description', '')
+            else:
+                error_msg = str(token_data.get('error', ''))
+            
+            if not error_msg:
+                # Jika masih kosong, ambil seluruh response sebagai rujukan
+                error_msg = f"Invalid card details or unsupported card type. (Raw: {str(token_data)[:100]})"
             
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Tokenization Failed: {error_msg}', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'Tokenization failed: {error_msg}', 'status': 'error', 'raw': token_data})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'msg': f'Card Declined: {error_msg}', 'status': 'error', 'raw': token_data})}\n\n"
             return
 
         yield f"data: {json.dumps({'type': 'log', 'msg': 'Card tokenized successfully.', 'class': 'success'})}\n\n"
@@ -259,7 +267,7 @@ def event_stream(card_num, mm, yy, cvv_code):
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
             err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('error', ''))
             yield f"data: {json.dumps({'type': 'log', 'msg': f'PayU Rejected: {pay_data.get("errorCode")} - {err_desc}', 'class': 'error'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': f'PayU Rejected: {err_desc}', 'status': 'error', 'raw': pay_data})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {err_desc}', 'status': 'error', 'raw': pay_data})}\n\n"
             return
 
         yield f"data: {json.dumps({'type': 'log', 'msg': 'Payment accepted by PayU. Waiting for Bank response...', 'class': 'success'})}\n\n"
@@ -277,20 +285,22 @@ def event_stream(card_num, mm, yy, cvv_code):
         category = final_status.get('category', '')
         value = final_status.get('value', '')
 
-        # FINAL RESULT LOGGING
+        # FINAL RESULT LOGGING (DIPERBAIKI: 3DS DIANGGAP DECLINE)
         if category == 'SUCCESS':
             yield f"data: {json.dumps({'type': 'log', 'msg': 'Transaction completed: PAYMENT SUCCESSFUL', 'class': 'success'})}\n\n"
             yield f"data: {json.dumps({'type': 'result', 'msg': 'Payment Successful', 'status': 'success', 'raw': final_status})}\n\n"
+        
+        # PERUBAHAN DI SINI: 3DS dan IN_PROGRESS dianggap DECLINE
+        elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
+            yield f"data: {json.dumps({'type': 'log', 'msg': f'Bank Response: 3DS_REQUIRED / {value}', 'class': 'error'})}\n\n"
+            yield f"data: {json.dumps({'type': 'log', 'msg': 'Conclusion: 3DS Card detected. Marked as DECLINED (Cannot bypass OTP).', 'class': 'error'})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'msg': 'Declined: 3DS Security Block', 'status': 'error', 'raw': final_status})}\n\n"
+        
         elif category == 'ERROR':
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Bank Response: {value}', 'class': 'error'})}\n\n"
-            if 'NOT_AUTHORIZED' in str(value):
-                yield f"data: {json.dumps({'type': 'log', 'msg': 'Conclusion: Card declined by bank (Dead/Blocked/No Funds).', 'class': 'error'})}\n\n"
-                yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {value}', 'status': 'error', 'raw': final_status})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {value}', 'status': 'error', 'raw': final_status})}\n\n"
-        elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
-            yield f"data: {json.dumps({'type': 'log', 'msg': 'Conclusion: 3DS IN_PROGRESS. Card is LIVE (Awaiting SMS/OTP).', 'class': 'success'})}\n\n"
-            yield f"data: {json.dumps({'type': 'result', 'msg': '3DS Required (Card Live)', 'status': 'warning', 'raw': final_status})}\n\n"
+            yield f"data: {json.dumps({'type': 'log', 'msg': 'Conclusion: Card declined by bank (Dead/Blocked/No Funds).', 'class': 'error'})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'msg': f'Payment declined: {value}', 'status': 'error', 'raw': final_status})}\n\n"
+        
         else:
             yield f"data: {json.dumps({'type': 'log', 'msg': f'Uncertain Gateway Response: {category} - {value}', 'class': 'warn'})}\n\n"
             yield f"data: {json.dumps({'type': 'result', 'msg': f'{category}: {value}', 'status': 'error', 'raw': final_status})}\n\n"
@@ -315,5 +325,4 @@ def check_card(cc: str = Query(...)):
     if len(yy) == 2:
         yy = '20' + yy
         
-    # Kembalikan Stream Response (Live Feed) bukan JSON biasa
     return StreamingResponse(event_stream(card_num, mm, yy, cvv_code), media_type="text/event-stream")
