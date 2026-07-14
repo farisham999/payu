@@ -138,7 +138,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token'
+            return 'Failed to extract orderId or token', {}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {
@@ -209,8 +209,8 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if not card_token:
             error_msg = token_data.get('error', {}).get('message', '') if isinstance(token_data.get('error'), dict) else str(token_data.get('error', ''))
             if error_msg:
-                return f'Tokenization failed: {error_msg}'
-            return f'Failed to tokenize card'
+                return f'Tokenization failed: {error_msg}', token_data
+            return f'Failed to tokenize card', token_data
 
         # ─── Step 4: Submit payment ───
         masked = cc[:6] + '*' * 6 + cc[-4:]
@@ -219,8 +219,8 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'email': email,
             'firstName': name.split()[0] if ' ' in name else name,
             'lastName': name.split()[1] if ' ' in name else '',
-            'currency': 'USD',
-            'amount': 28,
+            'currency': 'PLN',
+            'amount': 100,
             'payMethod': {
                 'type': 'c',
                 'token': card_token,
@@ -231,9 +231,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'metadata': {
                 'cardInputTime': 9039,
             },
-            'redirectUrl': f'https://secure.payu.com/pay/?orderId={order_id}&token=%token%',
-            'mcpFxTableId': 588817,
-            'mcpFxRate': 3.5229,
             'browserData': {
                 'screenWidth': 800,
                 'javaEnabled': False,
@@ -245,7 +242,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 'challengeWindowSize': '04',
             },
             'language': 'en',
-            'invoice': None,
         }
 
         r4 = session.post(f'https://secure.payu.com/api/front/orders/{order_id}/payments', headers=headers3, json=json4, timeout=30)
@@ -262,7 +258,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         error_code = pay_data.get('errorCode')
 
         if error_code:
-            return f'Payment error: {error_code}'
+            return f'Payment error: {error_code}', pay_data
 
         # ─── Step 5: Poll for result ───
         if continue_url and 'threeds' in continue_url:
@@ -274,18 +270,18 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         value = final_status.get('value', '')
 
         if category == 'SUCCESS':
-            return 'Payment Successful'
+            return 'Payment Successful', final_status
         elif category == 'ERROR':
-            return f'Payment declined: {value}'
+            return f'Payment declined: {value}', final_status
         elif category in ('WARNING_CONTINUE_3DS', 'IN_PROGRESS'):
-            return '3DS Required (Card Live)'
+            return '3DS Required (Card Live)', final_status
         else:
-            return f'{category}: {value}' if category else f'Unknown: {value}'
+            return f'{category}: {value}' if category else f'Unknown: {value}', final_status
 
     except requests.exceptions.Timeout:
-        return 'Timeout from Payment Gateway'
+        return 'Timeout from Payment Gateway', {}
     except Exception as e:
-        return f'Error: {str(e)}'
+        return f'Error: {str(e)}', {}
     finally:
         session.close()
 
@@ -301,8 +297,14 @@ def check_card(cc: str = Query(...)):
         yy = '20' + yy
         
     try:
-        result = _payu_sync(card_num, mm, yy, cvv_code)
+        # Fungsi sekarang return 2 benda: message dan raw_data
+        message, raw_data = _payu_sync(card_num, mm, yy, cvv_code)
+        return {
+            "message": message,
+            "raw": raw_data
+        }
     except Exception as e:
-        result = f"Process crashed: {str(e)}"
-        
-    return {"message": result}
+        return {
+            "message": f"Process crashed: {str(e)}",
+            "raw": {}
+        }
