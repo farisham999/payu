@@ -67,7 +67,14 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # STEP 1: MERCHANT REQUEST
+        # STEP 1: PROXY & MERCHANT REQUEST
+        if proxy_str:
+            # Ekstrak IP je untuk dipapar (buang password kalau ada)
+            proxy_ip = proxy_str.split('@')[-1] if '@' in proxy_str else proxy_str
+            yield f"data: {json.dumps({'type': 'log', 'msg': f'Connecting via Proxy -> {proxy_ip}', 'class': 'warn'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'log', 'msg': 'Connecting using Railway Default IP...', 'class': 'info'})}\n\n"
+            
         yield f"data: {json.dumps({'type': 'log', 'msg': 'Initiating connection to Merchant API...', 'class': 'info'})}\n\n"
         
         if 'horse_payu' in site_url or 'ajax' in site_url:
